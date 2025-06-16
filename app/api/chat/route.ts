@@ -15,27 +15,39 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const formData = await req.formData();
-    const imageFile = formData.get('image') as File;
-    const mode = formData.get('mode') as string;
-    
-    if (!imageFile) {
+    const contentType = req.headers.get('content-type') || '';
+    let imageFile: File | null = null;
+    let mode = 'full';
+    let question = '';
+    let currentPalette = '';
+
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData();
+      imageFile = formData.get('image') as File;
+      mode = formData.get('mode') as string;
+      question = formData.get('question') as string;
+      currentPalette = formData.get('currentPalette') as string;
+    } else if (contentType.includes('application/json')) {
+      const json = await req.json();
+      question = json.question;
+      mode = json.mode;
+    }
+
+    if (!imageFile && mode !== 'text-only') {
       return new Response(JSON.stringify({ error: 'No image file provided' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    
-    const imageBytes = await imageFile.arrayBuffer();
-    const imageBuffer = Buffer.from(imageBytes);
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-1.5-flash',
     });
 
     let basePrompt = '';
-    
-    if (mode === 'full') {
+    if (mode === 'text-only') {
+      basePrompt = `You are a helpful AI assistant. Please provide a clear and concise response to the following question: ${question}`;
+    } else if (mode === 'full') {
       basePrompt = `
 First, provide a detailed description of what you see in this image. Focus on:
 - The main subject or content
@@ -58,31 +70,25 @@ Main Colors:
 1. Name: [descriptive name], Hex: [hex code], RGB: [rgb value]
 2. Name: [descriptive name], Hex: [hex code], RGB: [rgb value]
 3. Name: [descriptive name], Hex: [hex code], RGB: [rgb value]`;
-    } else {
+    } else if (mode === 'followup') {
+      const paletteContext = currentPalette ? `
+Current color palette from previous analysis:
+${JSON.parse(currentPalette).map((color: { name: string; hex: string; rgb: string }, index: number) => 
+  `${index + 1}. Name: ${color.name}, Hex: ${color.hex}, RGB: ${color.rgb}`
+).join('\n')}
+` : '';
+
       basePrompt = `
-Analyze this image and identify the 3 most dominant colors.
+You are analyzing an image that was previously uploaded. The user has a follow-up question about it.
 
-For each color, provide:
-- A descriptive name
-- Hex code
-- RGB value
+User's question: ${question}
 
-Format the response exactly as follows:
+${paletteContext}
 
-1. Name: [descriptive name], Hex: [hex code], RGB: [rgb value]
-2. Name: [descriptive name], Hex: [hex code], RGB: [rgb value]
-3. Name: [descriptive name], Hex: [hex code], RGB: [rgb value]`;
+Please provide a detailed and helpful response to their question, focusing specifically on what they're asking about in the image. If their question is about colors, make sure to reference the existing color palette in your response.
+
+Format your response in a clear, conversational way.`;
     }
-    
-    const result = await model.generateContentStream([
-      { text: basePrompt },
-      {
-        inlineData: { 
-          mimeType: imageFile.type,
-          data: imageBuffer.toString('base64')
-        }
-      }
-    ]);
 
     const encoder = new TextEncoder();
     const stream = new TransformStream();
@@ -90,9 +96,30 @@ Format the response exactly as follows:
 
     (async () => {
       try {
-        for await (const chunk of result.stream) {
-          const text = chunk.text();
-          await writer.write(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
+        if (mode === 'text-only') {
+          const result = await model.generateContentStream(basePrompt);
+          for await (const chunk of result.stream) {
+            const text = chunk.text();
+            await writer.write(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
+          }
+        } else {
+          const imageBytes = await imageFile!.arrayBuffer();
+          const imageBuffer = Buffer.from(imageBytes);
+          
+          const result = await model.generateContentStream([
+            { text: basePrompt },
+            {
+              inlineData: { 
+                mimeType: imageFile!.type,
+                data: imageBuffer.toString('base64')
+              }
+            }
+          ]);
+
+          for await (const chunk of result.stream) {
+            const text = chunk.text();
+            await writer.write(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
+          }
         }
         await writer.close();
       } catch (error) {
