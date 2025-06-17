@@ -617,6 +617,13 @@ export default function Chatbot() {
                     fallback="AI"
                   />
                 )}
+                {message.role === "user" && (
+                  <MessageAvatar
+                    src="/google-avatar.png"
+                    alt="Google"
+                    fallback="Google"
+                  />
+                )}
                 {message.role === "user" && message.imagePreview ? (
                   <div className="flex flex-col gap-4 max-w-[500px]">
                     <div className="relative group">
@@ -637,6 +644,10 @@ export default function Chatbot() {
                       </div>
                     )}
                   </div>
+                ) : message.role === "user" ? (
+                  <MessageContent className="text-foreground">
+                    {message.content}
+                  </MessageContent>
                 ) : (
                   message.role === "assistant" && (
                     <div className="flex flex-col gap-6 max-w-full">
